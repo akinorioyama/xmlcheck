@@ -43,6 +43,11 @@ import pandas as pd
 import win32com.client
 import pywintypes
 
+#Tree visualization
+import networkx as nx
+from networkx.drawing.nx_agraph import graphviz_layout
+from matplotlib import pyplot as plt
+
 def register_all_namespaces(filename):
     namespaces = dict([node for _, node in ET.iterparse(filename, events=['start-ns'])])
     for ns in namespaces:
@@ -351,7 +356,9 @@ def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None)
 
     return extracted_part,extracted_inner_part
 
-def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set_opening, tag_set_close,parent_loop_index):
+def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set_opening, tag_set_close,parent_loop_index, parent_path):
+
+    global graph_paths
 
     all_nodes_under_the_path = df_stack[
         (df_stack["path"].str.contains(base_path, regex=False))&(df_stack["Depth"] == depth) ]
@@ -370,7 +377,7 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
         if pd.isna(row.tagself) is True:
             continue
         target_tag = row.tagself.lower()
-        base_path = row.path
+        base_path = str(row.path)
         loop_index = i
         paraId = row.paraId
         current_tag_opening = f"<w:{target_tag}>"
@@ -393,8 +400,17 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
             f.write(updated_document.encode('utf-8'))
         file_to_create = 'new_{:0>2}_{:0>4}_{:0>4}.docx'.format(str(depth),str(loop_index),str(parent_loop_index))
         open_result = zip_and_test(file_to_create = file_to_create, tagname=target_tag)
+        if depth >= 4:
+            graph_paths.append([str(parent_loop_index), str(loop_index)])
+            graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
         if open_result == False:
-            expand_further(base_path, depth + 1, target_tag, extracted_inner_section,tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close,loop_index )
+            if depth < 4:
+                graph_paths.append([str(parent_loop_index), str(loop_index)])
+                graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
+            expand_further(base_path, depth + 1, target_tag, extracted_inner_section,tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close,loop_index,base_path )
+
+def nudge(pos, x_shift, y_shift):
+    return {n:(x + x_shift, y + y_shift) for n,(x,y) in pos.items()}
 
 if __name__ == '__main__':
 
@@ -450,9 +466,11 @@ if __name__ == '__main__':
     document_remaining_part = document_master
     document_remaining_part = document_remaining_part.replace(document_header,"")
     document_remaining_part = document_remaining_part.replace(document_footer,"")
+    graph_paths = []
+    graph_text  = {}
     for i,row in df_stack[df_stack["Depth"] == 2].iterrows():
         target_tag = row.tagself.lower()
-        base_path  = row.path
+        base_path  = str(row.path)
         loop_index = i
         pbar.update(1)
         extracted_section, extracted_inner_section = extract_section(xml=document_remaining_part, loop_index=loop_index, base_path=base_path, target_tag = target_tag)
@@ -471,9 +489,28 @@ if __name__ == '__main__':
         file_to_create = 'new_{:0>2}_{:0>4}.docx'.format(str(2),str(loop_index))
         open_result = zip_and_test(file_to_create = file_to_create, tagname= target_tag)
         if open_result == False:
+            graph_paths.append([target_tag,str(loop_index)])
+            graph_text[target_tag]= "Top"
+            graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
             current_tag_opening = f"<w:{target_tag}>"
             current_tag_closing = f"</w:{target_tag}>"
             expand_further(base_path, 3, target_tag, extracted_inner_section,
-                           current_tag_opening, current_tag_closing, loop_index)
+                           current_tag_opening, current_tag_closing, loop_index, base_path)
 
     wd_app.Quit()
+
+    plt.figure(figsize=(32, 32))
+    G = nx.DiGraph(engine='diagram')
+    for path in graph_paths:
+        nx.add_path(G, path)
+    pos = graphviz_layout(G, prog='dot')
+    pos_nodes = nudge(pos, 0, 10)
+    nx.draw_networkx_labels(G, pos=pos_nodes, labels=graph_text, verticalalignment="bottom")
+    nx.draw(G, pos=pos,
+            node_color='lightgreen',
+            node_size=10000,
+            node_shape="s",
+            with_labels=True,
+            arrows=True,
+            verticalalignment = "top")
+    plt.savefig("tree.png")
