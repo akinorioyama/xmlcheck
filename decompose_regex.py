@@ -2,13 +2,16 @@
 Convert doc to docx
 
 Usage:
-  decompose_regex.py <in_file> <out_folder> <out_zipfolder> <debug_level>
+  decompose_regex.py <in_file> <out_folder> <out_zipfolder> <debug_level> <remove_sytles>
   decompose_regex.py -h | --help
   decompose_regex.py --version
 
   <in_file>: filename of the doc file to be converted
-  <out_folder>: output folder for the split files and
-    zipped file named (new.docx)
+  <out_folder>: output folder for the split files of docx file
+  <out_zipfolder>: output folder for zipped file named (new.docx) and
+    segment docx and XML files.
+  <debug_level>: INFO, DEBUG to configure the levels of logging messages
+  <remove_sytles>: remove *Style tags in the file (1..remove/0..retain)
 
 Examples:
   decompose_regex.py examples/sample.doc out
@@ -29,6 +32,9 @@ Options:
   -h --help     Show this screen.
   --version     Show version.
 """
+#20210614 current_tag_opening must be copied from actual paths
+#TODO: use specifications within tag to expand. Need to create both specified / non-specified versions
+
 import xml.etree.ElementTree as ET
 from lxml import etree
 import os
@@ -115,9 +121,11 @@ def create_docx(loop_index = None):
                 # 1) remove nbsp
                 #   xml = xml.replace(u'\xa0', ' ')
                 # 2) remove styles
-                #   pattern_style = re.compile(r'Style w:val="(.*?)"', re.MULTILINE | re.DOTALL)
-                #   if filename == "/word/document.xml":
-                #     xml = pattern_style.sub('Style w:val="Normal"',xml)
+                global remove_styles
+                if remove_styles == "1":
+                    if filename == "/word/document.xml":
+                        pattern_style = re.compile(r'Style w:val="(.*?)"', re.MULTILINE | re.DOTALL)
+                        xml = pattern_style.sub('Style w:val="Normal"',xml)
 
                 f.write(xml.encode('utf-8'))
 
@@ -380,8 +388,31 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
         base_path = str(row.path)
         loop_index = i
         paraId = row.paraId
-        current_tag_opening = f"<w:{target_tag}>"
-        current_tag_closing = f"</w:{target_tag}>"
+
+        current_tag_opening = None
+        current_tag_closing = None
+        compile_string = r'(<w:' + target_tag + '.*?>)'
+        # target_tag might need to include one space character after the tag
+        outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+        mached_tags = outer_pattern.findall(extracted_section)
+        logging.debug(f"matched_tag: {len(mached_tags)} ")
+        for index, part in enumerate(mached_tags):
+            current_tag_opening = part
+            break
+        if current_tag_opening is None:
+            current_tag_opening = f"<w:{target_tag}>"
+
+        compile_string = r'(</w:' + target_tag + '>)'
+        # target_tag might need to include one space character after the tag
+        outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+        mached_tags = outer_pattern.findall(extracted_section)
+        logging.debug(f"matched_tag: {len(mached_tags)} ")
+        for index, part in enumerate(mached_tags):
+            current_tag_closing = part
+            break
+        if current_tag_closing is None:
+            current_tag_closing = f"</w:{target_tag}>"
+
         logging.debug(f"TEST:{loop_index} {inner_remaining_part[0:10]}")
         extracted_section2, extracted_inner_section2 = extract_section(xml=inner_remaining_part, loop_index=loop_index, base_path=base_path,
                                             target_tag=target_tag)
@@ -420,6 +451,7 @@ if __name__ == '__main__':
     out_folder = arguments["<out_folder>"]
     out_zip_folder = arguments["<out_zipfolder>"]
     debug_level = arguments["<debug_level>"]
+    remove_styles = arguments["<remove_sytles>"]
     xml_original_filename = in_file
 
     logger = logging.getLogger(__name__)
@@ -456,7 +488,7 @@ if __name__ == '__main__':
         analyze_create_splitter(document_master=document_master)
         df_stack.to_csv("df_stack.csv")
     else:
-        logging.info("Using analysis file already available under the name of df_stack.csv")
+        logging.info("Using analysis file already available under the name of df_stack.csv. Converter may fail if older CSV file is used")
         df_stack = pd.read_csv("df_stack.csv")
 
     list_to_expand = range(1, len(df_stack[df_stack["Depth"] == 2])+1,1)
@@ -492,8 +524,30 @@ if __name__ == '__main__':
             graph_paths.append([target_tag,str(loop_index)])
             graph_text[target_tag]= "Top"
             graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
-            current_tag_opening = f"<w:{target_tag}>"
-            current_tag_closing = f"</w:{target_tag}>"
+
+            current_tag_opening = None
+            compile_string = r'(<w:' + target_tag + '.*?>)'
+            # target_tag might need to include one space character after the tag
+            outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+            mached_tags = outer_pattern.findall(extracted_section)
+            logging.debug(f"matched_tag: {len(mached_tags)} ")
+            for index, part in enumerate(mached_tags):
+                current_tag_opening = part
+                break
+            if current_tag_opening is None:
+                current_tag_opening = f"<w:{target_tag}>"
+
+            compile_string = r'(</w:' + target_tag + '>)'
+            # target_tag might need to include one space character after the tag
+            outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+            mached_tags = outer_pattern.findall(extracted_section)
+            logging.debug(f"matched_tag: {len(mached_tags)} ")
+            for index, part in enumerate(mached_tags):
+                current_tag_closing = part
+                break
+            if current_tag_closing is None:
+                current_tag_closing = f"</w:{target_tag}>"
+
             expand_further(base_path, 3, target_tag, extracted_inner_section,
                            current_tag_opening, current_tag_closing, loop_index, base_path)
 
@@ -513,4 +567,6 @@ if __name__ == '__main__':
             with_labels=True,
             arrows=True,
             verticalalignment = "top")
-    plt.savefig("tree.png")
+    filename = "tree.png"
+    plt.savefig(filename)
+    logging.info(f"File {filename} is created. The file shows an object tree for broken sections.")
