@@ -34,6 +34,7 @@ Options:
 """
 #20210614 current_tag_opening must be copied from actual paths
 #TODO: use specifications within tag to expand. Need to create both specified / non-specified versions
+#TODO: allow to inject <w:p> under <w:tc> through options
 
 import xml.etree.ElementTree as ET
 from lxml import etree
@@ -193,24 +194,26 @@ def zip_and_test(file_to_create = "", tagname = ""):
 def complement_empty_element(document_master = ""):
     # self-closing / empty element to closing element
     # TODO: automate tag discovery that needs closing element
-
-    for replacing_tag in ['w:p','w:ind','w:bookmarkEnd']:
-        p_tag = re.compile('(<' + replacing_tag + ' .*?>)')
-        for string in p_tag.findall(document_master ):
-            if string[-2:] == "/>":
-                new_string = string.replace("/>","></" + replacing_tag+">")
-                logging.debug(str(string) +"->" + str(new_string))
-                document_master = document_master.replace(string,new_string)
-
-    for replacing_tag in ['w:cantSplit','w:sectPr']:
-        p_tag = re.compile('(<' + replacing_tag + '.*?>)')
-        for string in p_tag.findall(document_master ):
-            if string[-2:] == "/>":
-                new_string = string.replace("/>","></" + replacing_tag+">")
-                logging.debug(str(string) +"->" + str(new_string))
-                document_master = document_master.replace(string,new_string)
-
     return document_master
+    # for replacing_tag in ['w:p','w:ind','w:bookmarkEnd', 'w:rFonts',
+    #     'w:tcW', 'w:gridSpan', 'w:shd',
+    #     'v:f','v:stroke','v:path','o:lock','v:imagedata']:
+    #     p_tag = re.compile('(<' + replacing_tag + ' .*?>)')
+    #     for string in p_tag.findall(document_master ):
+    #         if string[-2:] == "/>":
+    #             new_string = string.replace("/>","></" + replacing_tag+">")
+    #             logging.debug(str(string) +"->" + str(new_string))
+    #             document_master = document_master.replace(string,new_string)
+    #
+    # for replacing_tag in ['w:cantSplit','w:sectPr']:
+    #     p_tag = re.compile('(<' + replacing_tag + '.*?>)')
+    #     for string in p_tag.findall(document_master ):
+    #         if string[-2:] == "/>":
+    #             new_string = string.replace("/>","></" + replacing_tag+">")
+    #             logging.debug(str(string) +"->" + str(new_string))
+    #             document_master = document_master.replace(string,new_string)
+    #
+    # return document_master
 
 def analyze_create_splitter(document_master=""):
 
@@ -254,6 +257,7 @@ def printRecur(top_node, root,parsed_path, parent_node_index, leaf_number):
         elem_paraId = elem.attrib.get('{http://schemas.microsoft.com/office/word/2010/wordml}paraId')
         tmp_se = pd.Series([
             parent_node_index, indent, local_index, remove_namespace.findall( root.tag.title())[0],remove_namespace.findall( elem.tag.title())[0].lower(),
+            elem.prefix,
             parsed_path + "<" + remove_namespace.findall( elem.tag.title())[0] + f"[{local_index}]" , f"/{elem.getroottree().getpath(elem)}",
             elem_paraId
                             ], index=df_stack.columns)
@@ -262,7 +266,9 @@ def printRecur(top_node, root,parsed_path, parent_node_index, leaf_number):
         printRecur(top_node,elem,parsed_path, node_index,i)
     if len(root.getchildren()) == 0:
         tmp_se = pd.Series([
-            parent_node_index, indent, -1, remove_namespace.findall( root.tag.title())[0],None, parsed_path,
+            parent_node_index, indent, -1, remove_namespace.findall( root.tag.title())[0],None,
+            None,
+            parsed_path,
             f"/{root.getroottree().getpath(root)}",
             None
                             ], index=df_stack.columns)
@@ -282,28 +288,34 @@ def extract_document_part(xml=""):
         document_part_string = part
     return document_part_string
 
-def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None):
+def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None, target_tag_prefix = None):
 
+    re_wild_card = ".+?"
+    if target_tag_prefix is None:
+        target_tag_prefix = "w"
     if target_tag == "tbl":
         target_tag_string = "tbl>"
         target_tag_string_end = target_tag
         target_tag_fast   = "<w:tbl>"
         target_tag_fast_end = "</w:tbl>"
     elif target_tag == "p":
-        target_tag_string = "p .+?>"
+        target_tag_string = "p " + re_wild_card + ">"
+        target_tag_string_end = target_tag
+    elif target_tag == "trpr":
+        target_tag_string = "trpr" + ".??" + ">"
         target_tag_string_end = target_tag
     elif target_tag == "tr":
-        target_tag_string = "tr .+?>"
+        target_tag_string = "tr "+re_wild_card+">"
         target_tag_string_end = target_tag
         target_tag_fast   = "<w:tr "
         target_tag_fast_end = "</w:tr>"
     elif target_tag == "bookmarkend":
-        target_tag_string = "bookmarkEnd .+?>"
+        target_tag_string = "bookmarkEnd "+re_wild_card+">"
         target_tag_string_end ="bookmarkEnd"
     else:
-        target_tag_fast   = f"<w:{target_tag}>"
-        target_tag_fast_end = f"</w:{target_tag}>"
-        target_tag_string = target_tag + ">"
+        target_tag_fast   = f"<{target_tag_prefix}:{target_tag}>"
+        target_tag_fast_end = f"</{target_tag_prefix}:{target_tag}>"
+        target_tag_string = target_tag + re_wild_card+">"         #replaced from .+? to .*?. It might change the behavior
         target_tag_string_end = target_tag
 
     #TODO: target tag has to be loaded from mixedChartag (with or w/out IGNORECASE) and find()
@@ -312,59 +324,85 @@ def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None)
     all_nodes_under_the_path_with_the_same_tag = df_stack[(df_stack["path"].str.contains(base_path, regex=False))
                                                           & (df_stack["tagself"] == target_tag)]
     # remove other parts from the tag
-    compile_string_start = r'(<w:' + target_tag_string
+    compile_string_start = fr'(<{target_tag_prefix}:' + target_tag_string
     compile_string_insert = ""
-    index = 0
-    for i in all_nodes_under_the_path_with_the_same_tag.iterrows():
-        index += 1
-        if index == 1:
-            continue
-        compile_string_insert += r'.*?<w:' + target_tag_string + '.*?</w:' + target_tag +  '>'
-    compile_string_end = r'.*?</w:' + target_tag_string_end + '>)'
+    index = len(all_nodes_under_the_path_with_the_same_tag)
+    # for i in all_nodes_under_the_path_with_the_same_tag.iterrows():
+    #     index += 1
+    #     if index == 1:
+    #         continue
+    #     compile_string_insert += re_wild_card+'<w:' + target_tag_string +re_wild_card+'</w:' + target_tag +  '>'
+    if index >= 2:
+        compile_string_insert = '(' +re_wild_card+ '</w:'+target_tag+'>){1,' + str(index-1) + '}'
+    compile_string_end = re_wild_card+'</w:' + target_tag_string_end + '>)'
     compile_string = compile_string_start + compile_string_insert + compile_string_end
+    logging.debug(f"compile string:{compile_string}")
     outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL| re.IGNORECASE)
 
     compile_string_inside_start = r'<w:' + target_tag_string + '('
-    compile_string_inside_end = r'.*?)</w:' + target_tag_string_end + '>'
+    compile_string_inside_end = re_wild_card+')</w:' + target_tag_string_end + '>'
     compile_inside_string = compile_string_inside_start + compile_string_insert + compile_string_inside_end
+    logging.debug(f"extraction with the strings -inside {compile_inside_string}")
     inside_pattern = re.compile(compile_inside_string, re.MULTILINE | re.DOTALL | re.IGNORECASE )
 
     extracted_part = ""
     extracted_inner_part = ""
 
-    if index > 10:
-        start_positon=0
-        for i in range(1,index+1,1):
-            start_positon = xml.find(target_tag_fast,start_positon) + 1
-        end_position = xml.find(target_tag_fast_end, start_positon)
-        end_position = xml.find(target_tag_fast_end, end_position + 1)
-        #TODO: for the nested ones, upper-leve closing must be found. It might be necessary to find multi-levels
+    # if index > 8:
+    #     # compile_string2 = r'((<w:tr .+?>.+?){1,1}(<w:tr .+?>.+?</w:tr>){1,' + str(index) + '}.+?(</w:tr>){1,5})'
+    #     compile_string2 = r'((<w:tr .+?>){1,1}(.+?</w:tr>){1,' + str(index-1) + '}.+?(</w:tr>){1,5})'
+    #     outer_pattern2 = re.compile(compile_string2, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    #     matched_xml2 = outer_pattern2.findall(xml)
+    #
+    #     logging.debug(f"matched_xml2: {len(matched_xml2)} ")
+    #     for index, part in enumerate(matched_xml2):
+    #         extracted_part += part[0]
+    #         break
+    #     if len(matched_xml2) == 0:
+    #         logging.info(f"\n\rNOT FOUND {target_tag} at {base_path} of object {loop_index}")
 
-        end_position += len(target_tag_fast_end)
-        extracted_part = xml[0:end_position]
-        extracted_inner_part = "test"
-    else:
-        logging.debug(f"extraction with the strings {compile_string} ")
-        mached_xml = outer_pattern.findall(xml)
-        logging.debug(f"matched_xml: {len(mached_xml)} ")
-        for index, part in enumerate(mached_xml):
+        # start_positon=0
+        # for i in range(1,index+1,1):
+        #     start_positon = xml.find(target_tag_fast,start_positon) + 1
+        # end_position = xml.find(target_tag_fast_end, start_positon)
+        # end_position = xml.find(target_tag_fast_end, end_position + 1)
+        # #TODO: for the nested ones, upper-leve closing must be found. It might be necessary to find multi-levels
+        #
+        # end_position += len(target_tag_fast_end)
+        # extracted_part = xml[0:end_position]
+        # extracted_inner_part = "test"  #TODO: inner must be retrieved
+    logging.debug(f"extraction with the strings {compile_string} ")
+    mached_xml = outer_pattern.findall(xml)
+    logging.debug(f"matched_xml: {len(mached_xml)} ")
+    for index, part in enumerate(mached_xml):
+        # tc may exist in the next relevant parent tag (disregard the found result)
+        if target_tag == "tc":
+            if "tr" in xml[: [part for part in outer_pattern.finditer(xml)][0].start()]:
+                mached_xml = []
+                break
+        if type(part) is tuple:
+            extracted_part += part[0]
+        elif type(part) is str:
             extracted_part += part
-            break
-        if len(mached_xml) == 0:
-            logging.info(f"\n\rNOT FOUND {target_tag} at {base_path} of object {loop_index}")
-
-        logging.debug(f"extraction with the strings -inside {compile_inside_string}")
+        break
+    if len(mached_xml) == 0:
+        logging.info(f"\n\rNOT FOUND {target_tag} at {base_path} of object {loop_index}")
+    else:
+        # if opening part is not found, no inner part should be returned
         mached_xml = inside_pattern.findall(xml)
         logging.debug(f"matched_xml: {len(mached_xml)} ")
         for index, part in enumerate(mached_xml):
-            extracted_inner_part += part
+            if type(part) is tuple:
+                extracted_inner_part += part[0]
+            elif type(part) is str:
+                extracted_inner_part += part
             break
         if len(mached_xml) == 0:
             logging.info(f"\n\rNOT FOUND {target_tag} at {base_path} of object {loop_index}")
 
     return extracted_part,extracted_inner_part
 
-def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set_opening, tag_set_close,parent_loop_index, parent_path):
+def expand_further(base_path, depth, target_tag, target_tag_prefix, extracted_inner_section, tag_set_opening, tag_set_close,parent_loop_index, parent_path):
 
     global graph_paths
 
@@ -372,12 +410,13 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
         (df_stack["path"].str.contains(base_path, regex=False))&(df_stack["Depth"] == depth) ]
     inner_remaining_part = extracted_inner_section
     previous_tag = target_tag
-    if depth > 10:
-        logging.debug("over level 10: stopped")
+    if depth > 30:
+        logging.info("over level 10: stopped")
         return False
     if depth == 3:
         list_to_expand = range(1, len(df_stack[df_stack["Depth"] == depth])+1,1)
         pbar2 = tqdm(total=len(list_to_expand), desc='Creating section files level 3', position=0, leave=False)
+    logging.info(f"Expand_further===>tag:{base_path},target_tag:{target_tag},parent_loop_index:{parent_loop_index}")
     for i,row in all_nodes_under_the_path.iterrows():
         logging.debug(f"tagself: {row.tagself}")
         if depth == 3:
@@ -385,13 +424,24 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
         if pd.isna(row.tagself) is True:
             continue
         target_tag = row.tagself.lower()
+        target_tag_prefix = row.tagprefix
         base_path = str(row.path)
         loop_index = i
         paraId = row.paraId
+        logging.info(f"TODO --> tag:{str(base_path)},target_tag:{str(target_tag)},loopindex{str(loop_index)}")
+        logging.debug(f"inner_remaining_part:{loop_index} {inner_remaining_part[0:10]}")
 
         current_tag_opening = None
         current_tag_closing = None
-        compile_string = r'(<w:' + target_tag + '.*?>)'
+        # TODO: target_tags of w:r and w:rPr are identical in the match condition.
+        #   It must eliminate rPr for r and accept r + space
+        # if target_tag == "r":
+        #     compile_string = fr'(<{target_tag_prefix}:' + target_tag + '>)'
+        # else:
+        #     compile_string = fr'(<{target_tag_prefix}:' + target_tag + '.??>)'
+        # compile_string = fr'(<{target_tag_prefix}:' + target_tag + '[>|.*?>])'
+        # Both <w:tr> and <w:tr nnn>
+        compile_string = fr'(<{target_tag_prefix}:' + target_tag + fr' .*?>|<{target_tag_prefix}:' + target_tag + '.*?>)'
         # target_tag might need to include one space character after the tag
         outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
         mached_tags = outer_pattern.findall(extracted_section)
@@ -400,26 +450,36 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
             current_tag_opening = part
             break
         if current_tag_opening is None:
-            current_tag_opening = f"<w:{target_tag}>"
-
-        compile_string = r'(</w:' + target_tag + '>)'
-        # target_tag might need to include one space character after the tag
-        outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
-        mached_tags = outer_pattern.findall(extracted_section)
-        logging.debug(f"matched_tag: {len(mached_tags)} ")
-        for index, part in enumerate(mached_tags):
-            current_tag_closing = part
-            break
-        if current_tag_closing is None:
-            current_tag_closing = f"</w:{target_tag}>"
-
-        logging.debug(f"TEST:{loop_index} {inner_remaining_part[0:10]}")
-        extracted_section2, extracted_inner_section2 = extract_section(xml=inner_remaining_part, loop_index=loop_index, base_path=base_path,
-                                            target_tag=target_tag)
+            current_tag_opening = f"<{target_tag_prefix}:{target_tag}>"
+        #TODO: '<w:pStyle w:val="Normal"/>' -> empty element handing -> no current_tag_closing
+        #empty element must be copied directly without finding enclosing section
+        if current_tag_opening[-2:] == "/>":
+            extracted_section2 = current_tag_opening
+            current_tag_closing = ""
+        else:
+            compile_string = fr'(</{target_tag_prefix}:' + target_tag + '>)'
+            # target_tag might need to include one space character after the tag
+            outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+            mached_tags = outer_pattern.findall(extracted_section)
+            logging.debug(f"matched_tag: {len(mached_tags)} ")
+            for index, part in enumerate(mached_tags):
+                current_tag_closing = part
+                break
+            if current_tag_closing is None:
+                current_tag_closing = f"</{target_tag_prefix}:{target_tag}>"
+            extracted_section2, extracted_inner_section2 = extract_section(xml=inner_remaining_part, loop_index=loop_index, base_path=base_path,
+                                                target_tag=target_tag, target_tag_prefix=target_tag_prefix)
         logging.debug(f"tag:{base_path},target_tag:{target_tag},loopindex{loop_index}")
-        logging.debug(extracted_section2)
+        logging.debug(f"expected_section2:{extracted_section2}")
         #add extracted section of upper level
-        inner_remaining_part = inner_remaining_part.replace(extracted_section2, "") #TODO: only once
+        logging.debug(f"pre:{inner_remaining_part}")
+        # inner_remaining_part = inner_remaining_part.replace(extracted_section2, "")
+        # avoid replacing the exactly same string more than once
+        start_positon = inner_remaining_part.find(extracted_section2,0)
+        end_position = start_positon + len(extracted_section2)
+        inner_remaining_part = inner_remaining_part[:start_positon] + inner_remaining_part[end_position:]
+        logging.debug(f"post:{inner_remaining_part}")
+        logging.debug(f"missing namespaces:{tag_set_opening}")
         updated_document = document_header + \
                            f"<!-- {base_path} -->" + \
                            f"<!-- {paraId} -->" + \
@@ -438,7 +498,39 @@ def expand_further(base_path, depth, target_tag,extracted_inner_section, tag_set
             if depth < 4:
                 graph_paths.append([str(parent_loop_index), str(loop_index)])
                 graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
-            expand_further(base_path, depth + 1, target_tag, extracted_inner_section,tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close,loop_index,base_path )
+
+            # create tc/p supplemented version
+            #   conditions: tr->tc / tr and not tr->tc->tbl
+            if "tr" in re.findall("<w:(.+?)>",tag_set_opening)[::-1][0] or \
+               "tc" in re.findall("<w:(.+?)>", tag_set_opening)[::-1][0]:
+                tag_set_close_supplement = tag_set_close
+                if not ("<w:p" in extracted_section2):
+                    if not ("<w:tc>" in extracted_section2):
+                        tag_set_close_supplement = tag_set_close_supplement.replace("</w:tr>",
+                        "<w:tc><w:p></w:p></w:tc></w:tr> <!-- tc and p are inserted-->")
+                    else:
+                        tag_set_close_supplement = tag_set_close_supplement.replace("</w:tc>",
+                        "<w:tc><w:p></w:p></w:tc> <!-- p is inserted-->")
+
+                    updated_document = document_header + \
+                                       f"<!-- {base_path} -->" + \
+                                       f"<!-- {paraId} -->" + \
+                                       tag_set_opening + \
+                                       extracted_section2 + tag_set_close_supplement + document_footer
+                    with open(os.path.join(out_folder, "word/document.xml"), 'wb') as f:
+                        f.write(updated_document.encode('utf-8'))
+                    with open(os.path.join(out_zip_folder,
+                                           "document_{:0>2}_{:0>4}_{:0>4}_supplemented.xml".format(str(depth), str(loop_index),
+                                                                                      str(parent_loop_index))), 'wb') as f:
+                        f.write(updated_document.encode('utf-8'))
+                    file_to_create = 'new_{:0>2}_{:0>4}_{:0>4}_supplemented.docx'.format(str(depth), str(loop_index), str(parent_loop_index))
+                    open_result_supplemented = zip_and_test(file_to_create=file_to_create, tagname=target_tag)
+
+            if current_tag_closing != "":  #closed section will not be expanded
+                # expand_further(base_path, depth + 1, target_tag, target_tag_prefix, extracted_inner_section,tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close,loop_index,base_path )
+                expand_further(base_path, depth + 1, target_tag, target_tag_prefix, inner_remaining_part,
+                               tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close, loop_index,
+                               base_path)
 
 def nudge(pos, x_shift, y_shift):
     return {n:(x + x_shift, y + y_shift) for n,(x,y) in pos.items()}
@@ -478,7 +570,8 @@ if __name__ == '__main__':
         f.write(document_master.encode('utf-8'))
 
     df_stack = pd.DataFrame(
-        columns=['lv1','Depth', 'Leaf', 'tag', 'tagself','tagstring','path','paraId'])
+        columns=['lv1','Depth', 'Leaf', 'tag', 'tagself','tagprefix','tagstring','path','paraId'])
+    # elem.prefix (tagprefix) to handle non w: elements
     indent = 0
     node_index = 0
 
@@ -502,11 +595,13 @@ if __name__ == '__main__':
     graph_text  = {}
     for i,row in df_stack[df_stack["Depth"] == 2].iterrows():
         target_tag = row.tagself.lower()
+        target_tag_prefix = row.tagprefix
         base_path  = str(row.path)
         loop_index = i
         pbar.update(1)
         extracted_section, extracted_inner_section = extract_section(xml=document_remaining_part, loop_index=loop_index, base_path=base_path, target_tag = target_tag)
-        document_remaining_part = document_remaining_part.replace(extracted_section,"")
+        document_remaining_part = document_remaining_part.replace(extracted_section,"") #TODO: only once
+
         logging.debug(f"tag:{base_path},loopindex{loop_index}")
         logging.debug(extracted_section)
         paraId = row.paraId
@@ -526,7 +621,8 @@ if __name__ == '__main__':
             graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
 
             current_tag_opening = None
-            compile_string = r'(<w:' + target_tag + '.*?>)'
+            current_tag_closing = None
+            compile_string = r'(<w:' + target_tag + '.??>)'
             # target_tag might need to include one space character after the tag
             outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
             mached_tags = outer_pattern.findall(extracted_section)
@@ -548,7 +644,7 @@ if __name__ == '__main__':
             if current_tag_closing is None:
                 current_tag_closing = f"</w:{target_tag}>"
 
-            expand_further(base_path, 3, target_tag, extracted_inner_section,
+            expand_further(base_path, 3, target_tag, target_tag_prefix, extracted_inner_section,
                            current_tag_opening, current_tag_closing, loop_index, base_path)
 
     wd_app.Quit()
