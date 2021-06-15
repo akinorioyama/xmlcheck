@@ -2,7 +2,7 @@
 Convert doc to docx
 
 Usage:
-  decompose_regex.py <in_file> <out_folder> <out_zipfolder> <debug_level> <remove_sytles>
+  decompose_regex.py <in_file> <out_folder> <out_zipfolder> <debug_level> <remove_sytles> <supplement_p_tags_under_table>
   decompose_regex.py -h | --help
   decompose_regex.py --version
 
@@ -12,7 +12,8 @@ Usage:
     segment docx and XML files.
   <debug_level>: INFO, DEBUG to configure the levels of logging messages
   <remove_sytles>: remove *Style tags in the file (1..remove/0..retain)
-
+  <supplement_p_tags_under_table>: add p tags under tr/tc if missing
+                                                  (1..add/0..retain)
 Examples:
   decompose_regex.py examples/sample.doc out
     "sample.doc" in the current folder is converted to a docx file
@@ -245,6 +246,7 @@ def printRecur(top_node, root,parsed_path, parent_node_index, leaf_number):
     global indent
     global df_stack
     global node_index
+    global in_file
     local_index = 0
     node_index += 1
     remove_namespace = re.compile(r'\{.*\}(.*)')
@@ -256,6 +258,7 @@ def printRecur(top_node, root,parsed_path, parent_node_index, leaf_number):
         local_index = i
         elem_paraId = elem.attrib.get('{http://schemas.microsoft.com/office/word/2010/wordml}paraId')
         tmp_se = pd.Series([
+            in_file,
             parent_node_index, indent, local_index, remove_namespace.findall( root.tag.title())[0],remove_namespace.findall( elem.tag.title())[0].lower(),
             elem.prefix,
             parsed_path + "<" + remove_namespace.findall( elem.tag.title())[0] + f"[{local_index}]" , f"/{elem.getroottree().getpath(elem)}",
@@ -266,6 +269,7 @@ def printRecur(top_node, root,parsed_path, parent_node_index, leaf_number):
         printRecur(top_node,elem,parsed_path, node_index,i)
     if len(root.getchildren()) == 0:
         tmp_se = pd.Series([
+            in_file,
             parent_node_index, indent, -1, remove_namespace.findall( root.tag.title())[0],None,
             None,
             parsed_path,
@@ -304,6 +308,15 @@ def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None,
     elif target_tag == "trpr":
         target_tag_string = "trpr" + ".??" + ">"
         target_tag_string_end = target_tag
+    elif target_tag == "rpr":
+        target_tag_string = "rpr" + ".??" + ">"
+        target_tag_string_end = target_tag
+    elif target_tag == "ppr":
+        target_tag_string = "ppr" + ".??" + ">"
+        target_tag_string_end = target_tag
+    elif target_tag == "r":
+        target_tag_string = "r" + ".??" + ">"
+        target_tag_string_end = target_tag
     elif target_tag == "tr":
         target_tag_string = "tr "+re_wild_card+">"
         target_tag_string_end = target_tag
@@ -333,14 +346,14 @@ def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None,
     #         continue
     #     compile_string_insert += re_wild_card+'<w:' + target_tag_string +re_wild_card+'</w:' + target_tag +  '>'
     if index >= 2:
-        compile_string_insert = '(' +re_wild_card+ '</w:'+target_tag+'>){1,' + str(index-1) + '}'
-    compile_string_end = re_wild_card+'</w:' + target_tag_string_end + '>)'
+        compile_string_insert = '(' +re_wild_card+ '</'+target_tag_prefix+':'+target_tag+'>){1,' + str(index-1) + '}'
+    compile_string_end = re_wild_card+'</'+target_tag_prefix+':' + target_tag_string_end + '>)'
     compile_string = compile_string_start + compile_string_insert + compile_string_end
     logging.debug(f"compile string:{compile_string}")
     outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL| re.IGNORECASE)
 
-    compile_string_inside_start = r'<w:' + target_tag_string + '('
-    compile_string_inside_end = re_wild_card+')</w:' + target_tag_string_end + '>'
+    compile_string_inside_start = r'<'+target_tag_prefix+':' + target_tag_string + '('
+    compile_string_inside_end = re_wild_card+')</'+target_tag_prefix+':' + target_tag_string_end + '>'
     compile_inside_string = compile_string_inside_start + compile_string_insert + compile_string_inside_end
     logging.debug(f"extraction with the strings -inside {compile_inside_string}")
     inside_pattern = re.compile(compile_inside_string, re.MULTILINE | re.DOTALL | re.IGNORECASE )
@@ -405,6 +418,7 @@ def  extract_section(xml="", loop_index=None, base_path=None, target_tag = None,
 def expand_further(base_path, depth, target_tag, target_tag_prefix, extracted_inner_section, tag_set_opening, tag_set_close,parent_loop_index, parent_path):
 
     global graph_paths
+    global supplement_p_tags_under_table
 
     all_nodes_under_the_path = df_stack[
         (df_stack["path"].str.contains(base_path, regex=False))&(df_stack["Depth"] == depth) ]
@@ -441,7 +455,7 @@ def expand_further(base_path, depth, target_tag, target_tag_prefix, extracted_in
         #     compile_string = fr'(<{target_tag_prefix}:' + target_tag + '.??>)'
         # compile_string = fr'(<{target_tag_prefix}:' + target_tag + '[>|.*?>])'
         # Both <w:tr> and <w:tr nnn>
-        compile_string = fr'(<{target_tag_prefix}:' + target_tag + fr' .*?>|<{target_tag_prefix}:' + target_tag + '.*?>)'
+        compile_string = fr'(<{target_tag_prefix}:' + target_tag + fr' .*?>|<{target_tag_prefix}:' + target_tag + '>)'
         # target_tag might need to include one space character after the tag
         outer_pattern = re.compile(compile_string, re.MULTILINE | re.DOTALL | re.IGNORECASE)
         mached_tags = outer_pattern.findall(extracted_section)
@@ -491,44 +505,60 @@ def expand_further(base_path, depth, target_tag, target_tag_prefix, extracted_in
             f.write(updated_document.encode('utf-8'))
         file_to_create = 'new_{:0>2}_{:0>4}_{:0>4}.docx'.format(str(depth),str(loop_index),str(parent_loop_index))
         open_result = zip_and_test(file_to_create = file_to_create, tagname=target_tag)
-        if depth >= 4:
-            graph_paths.append([str(parent_loop_index), str(loop_index)])
-            graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
+        # if depth >= 4:
+        #     graph_paths.append([str(parent_loop_index), str(loop_index)])
+        #     graph_text[str(loop_index)] = target_tag +"\r\n" + str(open_result) #base_path.replace("//w:document/w:body/","").replace("/","\n")
         if open_result == False:
-            if depth < 4:
-                graph_paths.append([str(parent_loop_index), str(loop_index)])
-                graph_text[str(loop_index)] = base_path.replace("//w:document/w:body/","").replace("/","\n")
+            # if depth < 4:
+            graph_paths.append([str(parent_loop_index), str(loop_index)])
+            graph_text[str(loop_index)] = target_tag +"\r\n" + str(open_result) #base_path.replace("//w:document/w:body/","").replace("/","\n")
+            if supplement_p_tags_under_table == "1":
+                # create tc/p supplemented version
+                #   conditions: tr->tc / tr and not tr->tc->tbl
+                # TODO:
+                #   replace both at the surface level at the deepest level (two level tr -> tr may exists)
+                #     only when both levels need supplemental tc/p
+                if "tr" in re.findall("<w:(.+?)>",tag_set_opening)[::-1][0] or \
+                   "tc" in re.findall("<w:(.+?)>", tag_set_opening)[::-1][0]:
+                    tag_set_close_supplement = tag_set_close
+                    if not ("<w:p" in extracted_section2):
+                        if not ("<w:tc>" in tag_set_opening):
+                            replacing_closing_tag = "</w:tr>"
+                            start_positon = tag_set_close_supplement.find(replacing_closing_tag, 0)
+                            end_position = start_positon + len(replacing_closing_tag)
+                            tag_set_close_supplement = tag_set_close_supplement[:start_positon] +\
+                                                   "<w:tc><w:p></w:p></w:tc></w:tr> <!-- tc and p are inserted-->" +\
+                                                   tag_set_close_supplement[end_position:]
+                            # tag_set_close_supplement = tag_set_close_supplement.replace("</w:tr>",
+                            # "<w:tc><w:p></w:p></w:tc></w:tr> <!-- tc and p are inserted-->")
+                        elif ("<w:tc>" in tag_set_opening):
+                            replacing_closing_tag = "</w:tc>"
+                            start_positon = tag_set_close_supplement.find(replacing_closing_tag, 0)
+                            end_position = start_positon + len(replacing_closing_tag)
+                            tag_set_close_supplement = tag_set_close_supplement[:start_positon] + \
+                                                    "<w:p></w:p></w:tc> <!-- p is inserted-->" +\
+                                                    tag_set_close_supplement[end_position:]
 
-            # create tc/p supplemented version
-            #   conditions: tr->tc / tr and not tr->tc->tbl
-            if "tr" in re.findall("<w:(.+?)>",tag_set_opening)[::-1][0] or \
-               "tc" in re.findall("<w:(.+?)>", tag_set_opening)[::-1][0]:
-                tag_set_close_supplement = tag_set_close
-                if not ("<w:p" in extracted_section2):
-                    if not ("<w:tc>" in extracted_section2):
-                        tag_set_close_supplement = tag_set_close_supplement.replace("</w:tr>",
-                        "<w:tc><w:p></w:p></w:tc></w:tr> <!-- tc and p are inserted-->")
-                    else:
-                        tag_set_close_supplement = tag_set_close_supplement.replace("</w:tc>",
-                        "<w:tc><w:p></w:p></w:tc> <!-- p is inserted-->")
+                            # tag_set_close_supplement = tag_set_close_supplement.replace("</w:tc>",
+                            # "<w:tc><w:p></w:p></w:tc> <!-- p is inserted-->")
 
-                    updated_document = document_header + \
-                                       f"<!-- {base_path} -->" + \
-                                       f"<!-- {paraId} -->" + \
-                                       tag_set_opening + \
-                                       extracted_section2 + tag_set_close_supplement + document_footer
-                    with open(os.path.join(out_folder, "word/document.xml"), 'wb') as f:
-                        f.write(updated_document.encode('utf-8'))
-                    with open(os.path.join(out_zip_folder,
-                                           "document_{:0>2}_{:0>4}_{:0>4}_supplemented.xml".format(str(depth), str(loop_index),
-                                                                                      str(parent_loop_index))), 'wb') as f:
-                        f.write(updated_document.encode('utf-8'))
-                    file_to_create = 'new_{:0>2}_{:0>4}_{:0>4}_supplemented.docx'.format(str(depth), str(loop_index), str(parent_loop_index))
-                    open_result_supplemented = zip_and_test(file_to_create=file_to_create, tagname=target_tag)
+                        updated_document = document_header + \
+                                           f"<!-- {base_path} -->" + \
+                                           f"<!-- {paraId} -->" + \
+                                           tag_set_opening + \
+                                           extracted_section2 + tag_set_close_supplement + document_footer
+                        with open(os.path.join(out_folder, "word/document.xml"), 'wb') as f:
+                            f.write(updated_document.encode('utf-8'))
+                        with open(os.path.join(out_zip_folder,
+                                               "document_{:0>2}_{:0>4}_{:0>4}_supplemented.xml".format(str(depth), str(loop_index),
+                                                                                          str(parent_loop_index))), 'wb') as f:
+                            f.write(updated_document.encode('utf-8'))
+                        file_to_create = 'new_{:0>2}_{:0>4}_{:0>4}_supplemented.docx'.format(str(depth), str(loop_index), str(parent_loop_index))
+                        open_result_supplemented = zip_and_test(file_to_create=file_to_create, tagname=target_tag)
 
             if current_tag_closing != "":  #closed section will not be expanded
                 # expand_further(base_path, depth + 1, target_tag, target_tag_prefix, extracted_inner_section,tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close,loop_index,base_path )
-                expand_further(base_path, depth + 1, target_tag, target_tag_prefix, inner_remaining_part,
+                expand_further(base_path, depth + 1, target_tag, target_tag_prefix, extracted_section2,
                                tag_set_opening + current_tag_opening, current_tag_closing + tag_set_close, loop_index,
                                base_path)
 
@@ -544,6 +574,7 @@ if __name__ == '__main__':
     out_zip_folder = arguments["<out_zipfolder>"]
     debug_level = arguments["<debug_level>"]
     remove_styles = arguments["<remove_sytles>"]
+    supplement_p_tags_under_table = arguments["<supplement_p_tags_under_table>"]
     xml_original_filename = in_file
 
     logger = logging.getLogger(__name__)
@@ -570,8 +601,9 @@ if __name__ == '__main__':
         f.write(document_master.encode('utf-8'))
 
     df_stack = pd.DataFrame(
-        columns=['lv1','Depth', 'Leaf', 'tag', 'tagself','tagprefix','tagstring','path','paraId'])
+        columns=['infile','lv1','Depth', 'Leaf', 'tag', 'tagself','tagprefix','tagstring','path','paraId'])
     # elem.prefix (tagprefix) to handle non w: elements
+    # filename to check if working file is identical to the recorded data
     indent = 0
     node_index = 0
 
@@ -583,6 +615,9 @@ if __name__ == '__main__':
     else:
         logging.info("Using analysis file already available under the name of df_stack.csv. Converter may fail if older CSV file is used")
         df_stack = pd.read_csv("df_stack.csv")
+        if df_stack['infile'][0] != in_file:
+            logging.info(f"Inconsistent files df_stack.csv has {df_stack['infile'][0]}, but the input file is {in_file}")
+            exit(1)
 
     list_to_expand = range(1, len(df_stack[df_stack["Depth"] == 2])+1,1)
     pbar = tqdm(total=len(list_to_expand), desc='Creating section files top level', position=0, leave=False)
@@ -649,16 +684,16 @@ if __name__ == '__main__':
 
     wd_app.Quit()
 
-    plt.figure(figsize=(32, 32))
+    plt.figure(figsize=(64, 64))
     G = nx.DiGraph(engine='diagram')
     for path in graph_paths:
         nx.add_path(G, path)
     pos = graphviz_layout(G, prog='dot')
-    pos_nodes = nudge(pos, 0, 10)
+    pos_nodes = nudge(pos, 0, 5)
     nx.draw_networkx_labels(G, pos=pos_nodes, labels=graph_text, verticalalignment="bottom")
     nx.draw(G, pos=pos,
             node_color='lightgreen',
-            node_size=10000,
+            node_size=5000,
             node_shape="s",
             with_labels=True,
             arrows=True,
